@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>JavaScript 注入离线实验室</title>
+<style>
+:root{font-family:"Microsoft YaHei",system-ui,sans-serif;color:#183047;background:#f2f6fa;line-height:1.7}*{box-sizing:border-box}body{margin:0}main{max-width:1150px;margin:auto;padding:32px 24px 48px}h1{font-size:30px;margin:6px 0 10px;line-height:1.4}h2{font-size:19px;margin:0 0 12px}p{margin:8px 0}.eyebrow{color:#087c78;font-weight:700;font-size:13px;letter-spacing:1px}.intro{max-width:900px;color:#50677b}.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:24px 0}.step{background:#e5eef7;padding:14px 16px;border-radius:12px}.step b{display:block;color:#173e66}.grid{display:grid;grid-template-columns:1.12fr 1fr;gap:18px}.card{background:#fff;border:1px solid #dbe5ee;border-radius:16px;padding:22px;box-shadow:0 8px 24px #233c5010}.control{display:flex;flex-wrap:wrap;gap:9px;margin:16px 0}button,select{font:inherit;border-radius:8px;border:1px solid #bdcddd;padding:9px 12px;background:#fff;color:#193b5c;cursor:pointer}button:hover{background:#eaf2fa}button.primary{background:#087c78;color:white;border-color:#087c78}select{width:100%;margin-top:6px}.note{font-size:13px;color:#61758a}.status{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px}.status>div{background:#f2f6fa;border-radius:8px;padding:10px 12px;font-size:13px}.status strong{display:block;font-size:19px;color:#1d4f6c}.wide{grid-column:1/-1}.hint{padding:14px 16px;border-left:4px solid #d99324;background:#fff7e9;margin-top:18px;border-radius:4px;color:#77501d}canvas{display:block;width:100%;max-width:430px;height:auto;margin:0 auto;border-radius:12px;background:#e8f2ef}.log{background:#142b3e;color:#dce9f4;border-radius:10px;padding:16px;height:235px;overflow:auto;font-family:Consolas,"Microsoft YaHei",monospace;font-size:12px;white-space:pre-wrap;margin:0}code{background:#edf3f7;padding:2px 4px;border-radius:4px}a{color:#087c78}footer{margin-top:18px;color:#61758a;font-size:13px}.legend{display:flex;gap:12px;flex-wrap:wrap;font-size:13px;color:#61758a}@media(max-width:760px){.grid,.steps{grid-template-columns:1fr}h1{font-size:25px}.card{padding:16px}main{padding:22px 14px}}
+</style>
+</head>
+<body><main>
+<div class="eyebrow">鸿蒙小程序容器学习系列 · 本地实验</div>
+<h1>观察注入如何改变游戏入口</h1>
+<p class="intro">左侧选择执行顺序，右侧观察 Canvas。实验使用随附的真实注入脚本，但在内存里模拟网页、LIFF 与原 setter；不连接 LINE，不操作手机，不修改项目。</p>
+<div class="steps"><div class="step"><b>1　宿主先安装脚本</b>等待官方发布 LIFF 对象</div><div class="step"><b>2　游戏查询并缓存能力</b>只有加桌查询被改为 false</div><div class="step"><b>3　游戏决定是否绘制入口</b>缓存值决定画面，实时查询不等于缓存</div></div>
+<div class="grid">
+<section class="card"><h2>控制执行顺序</h2>
+<label for="origin">模拟的业务地址</label><select id="origin"><option value="target">目标游戏业务来源</option><option value="other">其他来源　脚本应主动退出</option></select>
+<div class="control"><button id="normal">原始启动</button><button id="early" class="primary">先注入再启动</button><button id="late">启动后才注入</button><button id="delayed">注入后迟到发布 LIFF</button></div>
+<div id="hint" class="hint" aria-live="polite"></div>
+<div class="status"><div>实时加桌查询<strong id="live">—</strong></div><div>游戏缓存值<strong id="cached">—</strong></div><div>分享能力查询<strong id="share">—</strong></div><div>原 setter 调用次数<strong id="setterCount">0</strong></div></div>
+<p class="note">每次点击都会创建全新的模拟文档。晚注入场景不会自动重跑游戏初始化，这正是保留旧按钮的原因。</p>
+</section>
+<section class="card"><h2>模拟游戏画面</h2><canvas id="game" width="430" height="330" aria-label="显示或隐藏加桌按钮的模拟游戏"></canvas><p id="result" class="note" aria-live="polite"></p><div class="legend"><span>绿色：普通游戏界面</span><span>橙色：加桌入口</span></div></section>
+<section class="card wide"><h2>调用日志</h2><pre id="log" class="log" aria-live="polite"></pre></section>
+</div>
+<footer>这是教学模型，按钮不是实际游戏资产。真正接入仍需要配置加载、WebView 文档开始注入和真机验证。<br>建议对照《03 注入时机与项目链路》和《05 实际脚本逐段解析》阅读。</footer>
+</main><script>
+'use strict';
+const actualPatch = "(function () {\n  // 此配置仅挂在ぶるぶるどーぶつ；认证页、其他域名和 iframe 均不改。\n  if (window.top !== window || location.origin !== 'https://miniapp.buruburu.app' ||\n      (location.pathname !== '/' && location.pathname !== '/index.html') ||\n      window.__atomicBuruShortcutHidden) return;\n  window.__atomicBuruShortcutHidden = true;\n  var wrappers = new WeakSet();\n  function patch(liff) {\n    if (!liff || typeof liff.isApiAvailable !== 'function' || wrappers.has(liff.isApiAvailable)) return liff;\n    var original = liff.isApiAvailable;\n    var wrapped = function (name) {\n      // 游戏据此设置 canCreateShortcut，隐藏 Canvas 入口及首次加桌引导，不伪造创建成功。\n      if (name === 'createShortcutOnHomeScreen') return false;\n      return original.apply(this, arguments);\n    };\n    try {\n      liff.isApiAvailable = wrapped;\n      wrappers.add(wrapped);\n    } catch (_) { /* 不覆盖只读能力接口，不影响游戏继续启动。 */ }\n    return liff;\n  }\n  var descriptor = Object.getOwnPropertyDescriptor(window, 'liff');\n  var current = window.liff;\n  patch(current);\n  // 保留 SDK 已安装的 LIFF getter/setter，兼容官方 SDK 迟到发布或重新赋值。\n  if (descriptor && (!descriptor.configurable ||\n      ('value' in descriptor ? !descriptor.writable : !descriptor.get || !descriptor.set))) return;\n  try {\n    Object.defineProperty(window, 'liff', {\n      configurable: true,\n      enumerable: descriptor ? descriptor.enumerable : true,\n      get: function () {\n        return patch(descriptor && descriptor.get ? descriptor.get.call(this) : current);\n      },\n      set: function (value) {\n        if (descriptor && descriptor.set) descriptor.set.call(this, value);\n        else current = value;\n        patch(descriptor && descriptor.get ? descriptor.get.call(this) : current);\n      }\n    });\n  } catch (_) { /* 全局属性不可改时，仅适配已存在的 LIFF 对象。 */ }\n})();\n";
+const el = id => document.getElementById(id);
+let state, generation = 0;
+function log(text) { state.logs.push(String(state.logs.length + 1).padStart(2,'0') + '  ' + text); el('log').textContent = state.logs.join('\n'); el('log').scrollTop=el('log').scrollHeight; }
+function setup() {
+  generation++;
+  const location = new URL(el('origin').value === 'target' ? 'https://miniapp.buruburu.app/index.html?c=line' : 'https://other.example/index.html');
+  const mockWindow = { location };
+  mockWindow.top = mockWindow;
+  state = { window: mockWindow, location, logs: [], cached: undefined, setterCount: 0, ready: false };
+  let current;
+  Object.defineProperty(mockWindow, 'liff', { configurable: true, enumerable: true,
+    get() { return current; },
+    set(value) { state.setterCount++; current=value; log('原 setter 继续执行：模拟原生 API 绑定'); }
+  });
+  el('log').textContent='';
+  log('创建模拟文档：' + location.origin);
+}
+function install() {
+  log('宿主执行真实注入脚本副本');
+  // 只给当前函数传入模拟对象，不修改真正浏览器窗口的 LIFF 或 location。
+  new Function('window','location', actualPatch)(state.window, state.location);
+  log('安装标记：' + (state.window.__atomicBuruShortcutHidden === true));
+}
+function publish() {
+  log('官方 SDK 发布模拟 window.liff');
+  state.window.liff = { marker:'原对象',
+    isApiAvailable(name, extra) {
+      log('进入原查询函数：' + name + '，this.marker=' + this.marker);
+      return ['createShortcutOnHomeScreen','shareTargetPicker'].includes(name);
+    },
+    isInClient() { return true; }
+  };
+}
+function initializeGame() {
+  state.cached=state.window.liff.isApiAvailable('createShortcutOnHomeScreen');
+  state.ready=true;
+  log('游戏初始化缓存 canCreateShortcut=' + state.cached);
+}
+function draw() {
+  const c=el('game'), x=c.getContext('2d');
+  x.clearRect(0,0,c.width,c.height);x.fillStyle='#e6f1ed';x.fillRect(0,0,430,330);
+  x.fillStyle='#d5e8df';x.fillRect(0,215,430,115);
+  x.fillStyle='#276252';x.font='bold 22px "Microsoft YaHei", sans-serif';x.fillText('模拟游戏主界面',24,44);
+  x.fillStyle='#6ca58f';x.beginPath();x.arc(125,160,48,0,Math.PI*2);x.fill();
+  x.fillStyle='#fff';x.beginPath();x.arc(110,151,5,0,Math.PI*2);x.arc(139,151,5,0,Math.PI*2);x.fill();
+  x.strokeStyle='#fff';x.lineWidth=3;x.beginPath();x.arc(125,166,14,0,Math.PI);x.stroke();
+  if(state.cached === true) {
+    x.fillStyle='#e7902f';x.fillRect(250,91,150,100);x.fillStyle='#fff';x.font='bold 18px "Microsoft YaHei", sans-serif';x.fillText('加桌入口',281,134);x.font='14px "Microsoft YaHei", sans-serif';x.fillText('此能力尚未接入',275,165);
+  } else {
+    x.strokeStyle='#9fbdaf';x.setLineDash([5,5]);x.strokeRect(250,91,150,100);x.setLineDash([]);x.fillStyle='#55776a';x.font='15px "Microsoft YaHei", sans-serif';x.fillText(state.ready?'入口未绘制':'等待游戏初始化',272,146);
+  }
+  x.fillStyle='#276252';x.font='16px "Microsoft YaHei", sans-serif';x.fillText('菜单',30,286);x.fillText('好友',127,286);x.fillText('照料',224,286);x.fillText('商店',321,286);
+}
+function render() {
+  const api=state.window.liff;
+  const live=api?api.isApiAvailable('createShortcutOnHomeScreen'):undefined;
+  const share=api?api.isApiAvailable('shareTargetPicker'):undefined;
+  el('live').textContent=String(live??'未就绪');el('cached').textContent=String(state.cached??'未初始化');el('share').textContent=String(share??'未就绪');el('setterCount').textContent=state.setterCount;
+  el('result').textContent=state.cached===true?'游戏缓存为 true，所以仍绘制入口。':'游戏未取得可用的加桌能力，入口不绘制。';
+  draw();
+  window.__labState={ready:state.ready,cached:state.cached,live,share,setterCount:state.setterCount,installed:state.window.__atomicBuruShortcutHidden===true};
+}
+function run(mode) {
+  setup(); const ownGeneration=generation;
+  if(mode==='normal') { publish();initializeGame();el('hint').textContent='原始启动：游戏把加桌能力缓存为 true，入口显示。'; }
+  if(mode==='early') { install();publish();initializeGame();el('hint').textContent='先注入：官方对象一发布就完成包装。游戏缓存 false，其他能力保持原结果。'; }
+  if(mode==='late') { publish();initializeGame();install();el('hint').textContent='晚注入：实时查询已经变成 false，但游戏原先缓存的 true 没有自动改变。'; }
+  if(mode==='delayed') {
+    install();el('hint').textContent='当前没有 LIFF；稍后发布时，通过保留下来的 setter 完成原绑定与新包装。';render();
+    setTimeout(()=>{if(ownGeneration!==generation)return;publish();initializeGame();render();},500);return;
+  }
+  if(el('origin').value==='other') el('hint').textContent='其他来源：真实脚本因 origin 不匹配主动退出，原能力结果保留。';
+  render();
+}
+for(const [id,mode] of [['normal','normal'],['early','early'],['late','late'],['delayed','delayed']]) el(id).onclick=()=>run(mode);
+el('origin').onchange=()=>run('normal');run('normal');
+</script></body></html>
